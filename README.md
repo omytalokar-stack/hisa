@@ -1,10 +1,18 @@
 ---
 title: Hisa
+emoji: 🐠
+colorFrom: green
+colorTo: purple
 sdk: gradio
+sdk_version: 6.32.0
+python_version: '3.12'
 app_file: app.py
+pinned: false
 ---
 
 # Hisa
+
+See the [Hugging Face Spaces configuration reference](https://huggingface.co/docs/hub/spaces-config-reference).
 
 Hisa is a standalone Node.js worker that polls Dimag AI V2 for video jobs, creates five vertical clips in Google Flow AI using a persistent Chrome profile, and streams the MP4s back to the backend. Video files remain on disk during upload rather than being buffered together in memory.
 
