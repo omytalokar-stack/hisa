@@ -1,3 +1,9 @@
+---
+title: Hisa
+sdk: gradio
+app_file: app.py
+---
+
 # Hisa
 
 Hisa is a standalone Node.js worker that polls Dimag AI V2 for video jobs, creates five vertical clips in Google Flow AI using a persistent Chrome profile, and streams the MP4s back to the backend. Video files remain on disk during upload rather than being buffered together in memory.
@@ -28,7 +34,22 @@ The worker requests jobs at `GET /api/hisa/next-job` and uploads five multipart 
 - `npm test` — run mocked worker and Flow page tests
 - `npm run check` — syntax-check service source files
 
-## Hugging Face Spaces (Docker SDK)
+## Hugging Face Spaces (Gradio SDK)
+
+The Space `https://huggingface.co/spaces/omytalokar/hisa` uses `app.py` as its Gradio entrypoint. Root-level `packages.txt` installs Node.js, Chromium, Xvfb, x11vnc, noVNC, and websockify; `requirements.txt` installs Gradio.
+
+1. In the Space **Settings → Variables and secrets**, add these secrets:
+   - `DIMAG_API_URL` = `https://youtubi.onrender.com`
+   - `HISA_SECRET` = the same value as Dimag AI V2's `CRON_SECRET`
+   - `VNC_PASSWORD` = a private password for the VNC session
+2. Enable persistent storage if available and set `CHROME_USER_DATA_DIR` to `/data/chrome-profile`; otherwise Google sign-in may need to be repeated after a Space restart.
+3. Push this repository to the Space and wait for its Gradio build to complete.
+4. Open the Space dashboard and choose **Open the remote Chrome desktop (noVNC)**. Sign in to Google/Flow AI in the desktop. Close the Chrome window after sign-in; the Hisa worker then begins polling.
+5. The dashboard displays the live worker JSON, last job ID, and errors. The worker's internal health URL is `http://127.0.0.1:5050/health`.
+
+The Gradio app starts Xvfb on `:99`, x11vnc protected by `VNC_PASSWORD`, and websockify/noVNC on an internal port 6080. It proxies the noVNC page and WebSocket through the Space's Gradio port 7860, so no additional public port is required. The Node worker starts with `PORT=5050`, `DISPLAY=:99`, `HEADLESS=false`, and `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium`. Keep the Space private if appropriate and never publish its secrets or browser profile.
+
+## Optional Hugging Face Spaces (Docker SDK)
 
 1. Create a new Hugging Face Space and select **Docker** as the Space SDK. The repository root must contain this `Dockerfile` and `start-space.sh`.
 2. In **Settings → Variables and secrets**, add these **secrets**:

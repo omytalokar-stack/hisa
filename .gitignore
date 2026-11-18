@@ -1,0 +1,6 @@
+.env
+node_modules/
+.chrome-profile/
+tmp/
+__pycache__/
+*.py[cod]
