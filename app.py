@@ -8,11 +8,17 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 import gradio as gr
+import spaces
 
 
 ROOT = Path(__file__).resolve().parent
 STATUS_URL = "http://127.0.0.1:5050/health"
 server_process = None
+
+
+@spaces.GPU
+def gpu_ping():
+    return "ok"
 
 
 def start_services():
@@ -80,6 +86,10 @@ def create_dashboard():
             with gr.Column():
                 last_job = gr.Textbox(label="Last job ID", interactive=False)
                 last_error = gr.Textbox(label="Last error", interactive=False, lines=4)
+
+        gpu_diagnostic = gr.Button("Run ZeroGPU diagnostic")
+        gpu_diagnostic_result = gr.Textbox(label="ZeroGPU diagnostic", interactive=False)
+        gpu_diagnostic.click(gpu_ping, outputs=gpu_diagnostic_result)
 
         outputs = [status_json, last_job, last_error]
         dashboard.load(worker_status, outputs=outputs)
