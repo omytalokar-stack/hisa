@@ -6,6 +6,7 @@ import json
 import os
 import signal
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from urllib.error import URLError
@@ -23,6 +24,7 @@ DISPLAY = ":99"
 STATUS_URL = "http://127.0.0.1:5050/health"
 VNC_URL = "http://127.0.0.1:6080"
 processes = []
+process_log_files = []
 
 
 def start_process(command, *, env=None, quiet=False):
@@ -51,17 +53,82 @@ def stop_processes(*_args):
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
+    for log_file in process_log_files:
+        if not log_file.closed:
+            log_file.close()
     if _args:
         raise SystemExit(0)
 
 
+def report_vnc_failure(name, log_path, error=None):
+    details = str(error) if error else "process exited during startup"
+    output = ""
+    try:
+        output = log_path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError as log_error:
+        output = f"Could not read {log_path}: {log_error}"
+    message = f"VNC warning: {name} failed to start: {details}"
+    if output:
+        message = f"{message}\n{output}"
+    print(message, flush=True)
+
+
+def start_logged_process(name, command):
+    log_path = Path("/tmp") / f"hisa-{name}.log"
+    try:
+        log_file = log_path.open("w", encoding="utf-8")
+    except OSError as error:
+        print(f"VNC warning: cannot create {log_path}: {error}", flush=True)
+        return None
+
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=ROOT,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except OSError as error:
+        log_file.close()
+        report_vnc_failure(name, log_path, error)
+        return None
+
+    processes.append(process)
+    process_log_files.append(log_file)
+    time.sleep(0.5)
+    if process.poll() is not None:
+        report_vnc_failure(name, log_path)
+        return None
+    return process
+
+
+def choose_profile_dir():
+    requested = Path(os.environ.get("CHROME_USER_DATA_DIR", "/data/chrome-profile"))
+    fallback = Path("/tmp/chrome-profile")
+    candidates = [requested]
+    if requested != fallback:
+        candidates.append(fallback)
+
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=candidate, prefix=".hisa-write-test-"):
+                pass
+            return candidate
+        except OSError as error:
+            print(
+                f"Profile directory {candidate} is not writable: {error}",
+                flush=True,
+            )
+
+    print(f"VNC warning: using profile fallback {fallback}.", flush=True)
+    return fallback
+
+
 def start_services():
     vnc_password = os.environ.get("VNC_PASSWORD")
-    if not vnc_password:
-        raise RuntimeError("Set the VNC_PASSWORD Space secret before starting Hisa.")
-
-    profile_dir = Path(os.environ.get("CHROME_USER_DATA_DIR", "/data/chrome-profile"))
-    profile_dir.mkdir(parents=True, exist_ok=True)
+    profile_dir = choose_profile_dir()
 
     environment = os.environ.copy()
     environment.update(
@@ -75,39 +142,74 @@ def start_services():
         }
     )
 
-    start_process(["Xvfb", DISPLAY, "-screen", "0", "1280x800x24"], quiet=True)
-    time.sleep(0.5)
-    if processes[-1].poll() is not None:
-        raise RuntimeError("Xvfb failed to start.")
+    start_logged_process("xvfb", ["Xvfb", DISPLAY, "-screen", "0", "1280x800x24"])
 
-    start_process(
-        [
+    password_file = Path("/tmp/vnc.passwd")
+    password_stored = False
+    if not vnc_password:
+        print("VNC warning: VNC_PASSWORD is not set; remote sign-in is unavailable.", flush=True)
+    else:
+        try:
+            result = subprocess.run(
+                ["x11vnc", "-storepasswd", vnc_password, str(password_file)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode == 0:
+                password_file.chmod(0o600)
+                password_stored = True
+            else:
+                output = (result.stdout + result.stderr).strip()
+                print(
+                    "VNC warning: could not store VNC password: "
+                    + (output or f"x11vnc exited with status {result.returncode}"),
+                    flush=True,
+                )
+        except OSError as error:
+            print(f"VNC warning: could not store VNC password: {error}", flush=True)
+
+    if password_stored:
+        start_logged_process(
             "x11vnc",
-            "-display",
-            DISPLAY,
-            "-localhost",
-            "-forever",
-            "-shared",
-            "-rfbport",
-            "5900",
-            "-passwd",
-            vnc_password,
-        ],
-        quiet=True,
-    )
-    start_process(
+            [
+                "x11vnc",
+                "-display",
+                DISPLAY,
+                "-localhost",
+                "-forever",
+                "-shared",
+                "-rfbport",
+                "5900",
+                "-rfbauth",
+                str(password_file),
+            ],
+        )
+
+    websockify = start_logged_process(
+        "websockify",
         [
+            "python3",
+            "-m",
             "websockify",
             "--web=/usr/share/novnc/",
-            "--listen=127.0.0.1",
             "6080",
             "127.0.0.1:5900",
         ],
-        quiet=True,
     )
-    time.sleep(0.5)
-    if any(process.poll() is not None for process in processes[-2:]):
-        raise RuntimeError("x11vnc or websockify failed to start.")
+    if websockify is None:
+        start_logged_process(
+            "novnc-proxy",
+            [
+                "novnc_proxy",
+                "--vnc",
+                "127.0.0.1:5900",
+                "--listen",
+                "6080",
+                "--web",
+                "/usr/share/novnc/",
+            ],
+        )
 
     subprocess.run(["npm", "ci", "--omit=dev"], cwd=ROOT, check=True, env=environment)
     start_process(["node", "src/server.js"], env=environment)
