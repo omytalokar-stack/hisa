@@ -1,10 +1,43 @@
 import { chromium } from 'playwright';
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const SIGN_IN_TIMEOUT_MS = 5 * 60 * 1000;
 const CLIP_TIMEOUT_MS = 3 * 60 * 1000;
+const FLOW_STORAGE_STATE_PATH = '/tmp/flow-storage-state.json';
 
-export function createBrowserLaunchOptions({ headless, downloadsPath, browserChannel }) {
+export function decodeFlowStorageState(encodedState) {
+  const stateJson = Buffer.from(encodedState, 'base64').toString('utf8');
+  try {
+    const state = JSON.parse(stateJson);
+    if (!state || typeof state !== 'object' || Array.isArray(state)) {
+      throw new Error('Invalid storage state.');
+    }
+  } catch {
+    throw new Error(
+      'FLOW_STORAGE_STATE_B64 must contain a base64-encoded Playwright storage state JSON.',
+    );
+  }
+  return stateJson;
+}
+
+export async function writeFlowStorageState(
+  encodedState = process.env.FLOW_STORAGE_STATE_B64,
+  storagePath = FLOW_STORAGE_STATE_PATH,
+) {
+  if (!encodedState) {
+    return undefined;
+  }
+  await writeFile(storagePath, decodeFlowStorageState(encodedState), { mode: 0o600 });
+  return storagePath;
+}
+
+export function createBrowserLaunchOptions({
+  headless,
+  downloadsPath,
+  browserChannel,
+  storageState,
+}) {
   const options = {
     headless,
     acceptDownloads: true,
@@ -17,6 +50,9 @@ export function createBrowserLaunchOptions({ headless, downloadsPath, browserCha
   };
   if (downloadsPath) {
     options.downloadsPath = downloadsPath;
+  }
+  if (storageState) {
+    options.storageState = storageState;
   }
 
   const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
@@ -128,10 +164,12 @@ export async function generateClips({
   headless,
   logger = console,
 }) {
+  const storageState = await writeFlowStorageState();
   const browserOptions = createBrowserLaunchOptions({
     headless,
     downloadsPath: jobTmpDir,
     browserChannel,
+    storageState,
   });
   const context = await chromium.launchPersistentContext(profileDir, browserOptions);
 

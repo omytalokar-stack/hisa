@@ -56,7 +56,6 @@ test('serves live status JSON at / and /health on the configured port', async ()
       HEADLESS: 'true',
       PORT: String(port),
       POLL_INTERVAL_MS: '60000',
-      ENABLE_VNC_PROXY: 'false',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

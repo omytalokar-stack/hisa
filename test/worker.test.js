@@ -3,10 +3,39 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { automateScene, createBrowserLaunchOptions } from '../src/flowAutomator.js';
+import {
+  automateScene,
+  createBrowserLaunchOptions,
+  decodeFlowStorageState,
+  writeFlowStorageState,
+} from '../src/flowAutomator.js';
 import { createWorker } from '../src/worker.js';
 
 const scenePrompts = ['one', 'two', 'three', 'four', 'five'];
+
+test('writes decoded Playwright storage state and configures it for Chromium', async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), 'hisa-storage-state-'));
+  const storagePath = join(tempRoot, 'state.json');
+  const state = { cookies: [], origins: [] };
+  const encodedState = Buffer.from(JSON.stringify(state)).toString('base64');
+
+  try {
+    assert.equal(decodeFlowStorageState(encodedState), JSON.stringify(state));
+    assert.equal(await writeFlowStorageState(encodedState, storagePath), storagePath);
+    assert.deepEqual(JSON.parse(await readFile(storagePath, 'utf8')), state);
+    assert.equal(
+      createBrowserLaunchOptions({
+        headless: true,
+        browserChannel: 'bundled',
+        storageState: storagePath,
+      }).storageState,
+      storagePath,
+    );
+    assert.throws(() => decodeFlowStorageState('not-json'), /FLOW_STORAGE_STATE_B64/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
 
 test('polls and streams five validated clips to the completion endpoint', async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), 'hisa-test-'));

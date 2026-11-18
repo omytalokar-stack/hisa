@@ -1,6 +1,7 @@
 .env
 node_modules/
 .chrome-profile/
+session.b64
 tmp/
 __pycache__/
 *.py[cod]
