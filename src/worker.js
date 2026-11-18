@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { generateClips } from './flowAutomator.js';
 
-const REQUIRED_CLIP_COUNT = 5;
+const MIN_CLIP_COUNT = 1;
+const MAX_CLIP_COUNT = 5;
 const MIN_CLIP_BYTES = 50 * 1024;
 
 function normalizeBaseUrl(value) {
@@ -95,10 +96,11 @@ export function createWorker({
     if (
       !jobId ||
       !Array.isArray(scenePrompts) ||
-      scenePrompts.length !== REQUIRED_CLIP_COUNT ||
-      scenePrompts.some((prompt) => typeof prompt !== 'string' || prompt.length === 0)
+      scenePrompts.length < MIN_CLIP_COUNT ||
+      scenePrompts.length > MAX_CLIP_COUNT ||
+      scenePrompts.some((prompt) => typeof prompt !== 'string' || prompt.trim().length === 0)
     ) {
-      throw new Error('Received a job without a jobId and exactly five scenePrompts.');
+      throw new Error('Received a job without a jobId and between one and five non-empty scenePrompts.');
     }
 
     state.busy = true;
@@ -117,8 +119,8 @@ export function createWorker({
         headless: config.headless,
       });
 
-      if (!Array.isArray(clipPaths) || clipPaths.length !== REQUIRED_CLIP_COUNT) {
-        throw new Error('Flow automation did not return exactly five clip files.');
+      if (!Array.isArray(clipPaths) || clipPaths.length !== scenePrompts.length) {
+        throw new Error(`Flow automation did not return exactly ${scenePrompts.length} clip files.`);
       }
 
       for (const [index, path] of clipPaths.entries()) {

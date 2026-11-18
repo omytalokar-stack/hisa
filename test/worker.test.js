@@ -11,7 +11,7 @@ import {
 } from '../src/flowAutomator.js';
 import { createWorker } from '../src/worker.js';
 
-const scenePrompts = ['one', 'two', 'three', 'four', 'five'];
+const scenePrompts = ['one', 'two', 'three'];
 
 test('writes decoded Playwright storage state and configures it for Chromium', async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), 'hisa-storage-state-'));
@@ -37,62 +37,65 @@ test('writes decoded Playwright storage state and configures it for Chromium', a
   }
 });
 
-test('polls and streams five validated clips to the completion endpoint', async () => {
-  const tempRoot = await mkdtemp(join(tmpdir(), 'hisa-test-'));
-  const uploads = [];
-  let calls = 0;
-  const worker = createWorker({
-    config: {
-      apiUrl: 'https://backend.example/',
-      secret: 'test-secret',
-      flowUrl: 'https://flow.example',
-      profileDir: join(tempRoot, 'profile'),
-      headless: true,
-      pollIntervalMs: 60000,
-    },
-    fetchImpl: async (url, options) => {
-      calls += 1;
-      assert.equal(options.headers['x-hisa-secret'], 'test-secret');
-      if (url.endsWith('/api/hisa/next-job')) {
-        return {
-          ok: true,
-          json: async () => ({
-            job: { jobId: 'job/123', channelTitle: 'Channel', scenePrompts },
+for (const clipCount of [1, 3, 5]) {
+  const prompts = Array.from({ length: clipCount }, (_, index) => `scene ${index + 1}`);
+  test(`polls and streams ${clipCount} validated clips to the completion endpoint`, async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'hisa-test-'));
+    const uploads = [];
+    let calls = 0;
+    const worker = createWorker({
+      config: {
+        apiUrl: 'https://backend.example/',
+        secret: 'test-secret',
+        flowUrl: 'https://flow.example',
+        profileDir: join(tempRoot, 'profile'),
+        headless: true,
+        pollIntervalMs: 60000,
+      },
+      fetchImpl: async (url, options) => {
+        calls += 1;
+        assert.equal(options.headers['x-hisa-secret'], 'test-secret');
+        if (url.endsWith('/api/hisa/next-job')) {
+          return {
+            ok: true,
+            json: async () => ({
+              job: { jobId: 'job/123', channelTitle: 'Channel', scenePrompts: prompts },
+            }),
+          };
+        }
+        assert.equal(url, 'https://backend.example/api/hisa/complete-job/job%2F123');
+        assert.equal(options.method, 'POST');
+        assert.match(options.headers['content-type'], /^multipart\/form-data; boundary=/);
+        for await (const chunk of options.body) {
+          uploads.push(chunk);
+        }
+        return { ok: true };
+      },
+      clipGenerator: async ({ jobTmpDir, scenePrompts: generatedPrompts }) => {
+        assert.deepEqual(generatedPrompts, prompts);
+        return Promise.all(
+          generatedPrompts.map(async (_prompt, index) => {
+            const path = join(jobTmpDir, `clip_${index + 1}.mp4`);
+            await writeFile(path, Buffer.alloc(51 * 1024, index));
+            return path;
           }),
-        };
-      }
-      assert.equal(url, 'https://backend.example/api/hisa/complete-job/job%2F123');
-      assert.equal(options.method, 'POST');
-      assert.match(options.headers['content-type'], /^multipart\/form-data; boundary=/);
-      for await (const chunk of options.body) {
-        uploads.push(chunk);
-      }
-      return { ok: true };
-    },
-    clipGenerator: async ({ jobTmpDir, scenePrompts: prompts }) => {
-      assert.deepEqual(prompts, scenePrompts);
-      return Promise.all(
-        prompts.map(async (_prompt, index) => {
-          const path = join(jobTmpDir, `clip_${index + 1}.mp4`);
-          await writeFile(path, Buffer.alloc(51 * 1024, index));
-          return path;
-        }),
-      );
-    },
-    logger: { info() {}, error() {} },
-  });
+        );
+      },
+      logger: { info() {}, error() {} },
+    });
 
-  try {
-    await worker.pollOnce();
-    assert.equal(calls, 2);
-    assert.match(Buffer.concat(uploads).toString('utf8'), /filename="clip_5\.mp4"/);
-    assert.equal(worker.state.busy, false);
-    assert.equal(worker.state.lastJobId, 'job/123');
-    assert.deepEqual(await readdir(tempRoot), []);
-  } finally {
-    await rm(tempRoot, { recursive: true, force: true });
-  }
-});
+    try {
+      await worker.pollOnce();
+      assert.equal(calls, 2);
+      assert.match(Buffer.concat(uploads).toString('utf8'), new RegExp(`filename="clip_${clipCount}\\.mp4"`));
+      assert.equal(worker.state.busy, false);
+      assert.equal(worker.state.lastJobId, 'job/123');
+      assert.deepEqual(await readdir(tempRoot), []);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+}
 
 test('cleans up a job directory when a clip fails validation', async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), 'hisa-test-'));
@@ -118,7 +121,7 @@ test('cleans up a job directory when a clip fails validation', async () => {
     },
     clipGenerator: async ({ jobTmpDir }) => {
       const paths = [];
-      for (let index = 0; index < 5; index += 1) {
+      for (let index = 0; index < scenePrompts.length; index += 1) {
         const path = join(jobTmpDir, `clip_${index + 1}.mp4`);
         await writeFile(path, Buffer.alloc(index === 0 ? 50 * 1024 : 51 * 1024));
         paths.push(path);
