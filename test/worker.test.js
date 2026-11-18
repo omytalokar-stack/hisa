@@ -7,6 +7,7 @@ import {
   automateScene,
   createBrowserLaunchOptions,
   decodeFlowStorageState,
+  navigateToFlowWorkspace,
   writeFlowStorageState,
 } from '../src/flowAutomator.js';
 import { createWorker } from '../src/worker.js';
@@ -139,6 +140,89 @@ test('cleans up a job directory when a clip fails validation', async () => {
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
+});
+
+test('opens the Flow app from the about page CTA in a popup', async () => {
+  const popupPage = {
+    url: () => 'https://labs.google/fx/tools/flow',
+    title: async () => 'Google Flow',
+    waitForTimeout: async () => {},
+  };
+  let resolvePopup;
+  let clicked = false;
+  const emptyLocator = { count: async () => 0 };
+  const createWithFlowButton = {
+    count: async () => 1,
+    nth() {
+      return this;
+    },
+    isVisible: async () => true,
+    isEnabled: async () => true,
+    click: async () => {
+      clicked = true;
+      resolvePopup(popupPage);
+    },
+  };
+  const page = {
+    url: () => 'https://flow.google.com/about#tools',
+    title: async () => 'Google Flow — AI filmmaking',
+    getByRole: (role, options) =>
+      role === 'button' && /create with google flow/i.test(String(options.name))
+        ? createWithFlowButton
+        : emptyLocator,
+    getByText: () => emptyLocator,
+    waitForEvent: (eventName, { timeout }) => {
+      assert.equal(eventName, 'popup');
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('No popup opened.')), timeout);
+        resolvePopup = (popup) => {
+          clearTimeout(timer);
+          resolve(popup);
+        };
+      });
+    },
+  };
+  const logMessages = [];
+
+  const workspacePage = await navigateToFlowWorkspace(page, {
+    info: (message) => logMessages.push(message),
+  });
+
+  assert.equal(clicked, true);
+  assert.equal(workspacePage, popupPage);
+  assert.ok(logMessages.some((message) => message.includes('https://labs.google/fx/tools/flow')));
+});
+
+test('follows a same-tab redirect from the Flow about page CTA', async () => {
+  let currentUrl = 'https://flow.google.com/about#tools';
+  const createWithFlowButton = {
+    count: async () => 1,
+    nth() {
+      return this;
+    },
+    isVisible: async () => true,
+    isEnabled: async () => true,
+    click: async () => {
+      currentUrl = 'https://flow.google.com/tools/flow';
+    },
+  };
+  const emptyLocator = { count: async () => 0 };
+  const page = {
+    url: () => currentUrl,
+    title: async () => 'Google Flow',
+    getByRole: (role, options) =>
+      role === 'button' && /try in google flow/i.test(String(options.name))
+        ? createWithFlowButton
+        : emptyLocator,
+    getByText: () => emptyLocator,
+    waitForEvent: async () => null,
+    waitForTimeout: async () => {},
+  };
+
+  const workspacePage = await navigateToFlowWorkspace(page, { info() {} });
+
+  assert.equal(workspacePage, page);
+  assert.equal(workspacePage.url(), 'https://flow.google.com/tools/flow');
 });
 
 test('opens a new project and fills a contenteditable Flow prompt editor', async () => {

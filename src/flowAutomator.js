@@ -4,6 +4,9 @@ import { join } from 'node:path';
 
 const SIGN_IN_TIMEOUT_MS = 5 * 60 * 1000;
 const CLIP_TIMEOUT_MS = 3 * 60 * 1000;
+const FLOW_ENTRY_BUTTON_TIMEOUT_MS = 5 * 1000;
+const FLOW_WORKSPACE_TIMEOUT_MS = 30 * 1000;
+const POPUP_WAIT_TIMEOUT_MS = 1500;
 const PROMPT_INPUT_TIMEOUT_MS = 15 * 1000;
 const PROJECT_BUTTON_TIMEOUT_MS = 3 * 1000;
 const FLOW_STORAGE_STATE_PATH = '/tmp/flow-storage-state.json';
@@ -79,6 +82,17 @@ function isSignInScreen(page) {
   return /accounts\.google\.com/i.test(page.url());
 }
 
+function isFlowAboutUrl(value) {
+  const url = new URL(value);
+  return url.hostname.toLowerCase() === 'flow.google.com' && /^\/about\/?$/i.test(url.pathname);
+}
+
+function isFlowWorkspaceUrl(value) {
+  const url = new URL(value);
+  const hostname = url.hostname.toLowerCase();
+  return (hostname === 'flow.google.com' || hostname === 'labs.google') && !isFlowAboutUrl(value);
+}
+
 async function waitForWorkspace(page, logger) {
   if (!isSignInScreen(page)) {
     return;
@@ -94,6 +108,81 @@ async function waitForWorkspace(page, logger) {
     }
   }
   throw new Error('Timed out waiting for Google/Flow AI sign-in.');
+}
+
+async function findFlowEntryButton(page, timeoutMs) {
+  const candidates = [
+    page.getByRole('button', { name: /create with google flow/i }),
+    page.getByRole('button', { name: /try in google flow/i }),
+    page.getByRole('link', { name: /create with google flow/i }),
+    page.getByRole('link', { name: /try in google flow/i }),
+    page.getByText(/create with google flow|try in google flow/i),
+  ];
+  const deadline = Date.now() + timeoutMs;
+
+  while (true) {
+    for (const candidate of candidates) {
+      const count = await candidate.count();
+      for (let index = 0; index < count; index += 1) {
+        const button = candidate.nth(index);
+        if (await button.isVisible() && await button.isEnabled()) {
+          return button;
+        }
+      }
+    }
+    if (Date.now() >= deadline) {
+      return null;
+    }
+    await page.waitForTimeout(Math.min(250, deadline - Date.now()));
+  }
+}
+
+async function waitForFlowWorkspace(page, logger, previousUrl) {
+  const deadline = Date.now() + FLOW_WORKSPACE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (isSignInScreen(page)) {
+      await waitForWorkspace(page, logger);
+    }
+    const currentUrl = page.url();
+    if (currentUrl !== previousUrl && isFlowWorkspaceUrl(currentUrl)) {
+      return page;
+    }
+    await page.waitForTimeout(250);
+  }
+  throw new Error(`Timed out waiting for the Flow app workspace. Current URL: ${page.url()}`);
+}
+
+export async function navigateToFlowWorkspace(page, logger = console) {
+  await waitForWorkspace(page, logger);
+  const startingUrl = page.url();
+  const aboutPage = isFlowAboutUrl(startingUrl);
+  const entryButton = await findFlowEntryButton(
+    page,
+    aboutPage ? FLOW_ENTRY_BUTTON_TIMEOUT_MS : 0,
+  );
+  if (!aboutPage && !entryButton) {
+    return page;
+  }
+  if (!entryButton) {
+    throw new Error(`Could not find a Flow app entry button. Current URL: ${startingUrl}`);
+  }
+
+  const popupPromise = page
+    .waitForEvent('popup', { timeout: POPUP_WAIT_TIMEOUT_MS })
+    .catch(() => null);
+  await entryButton.click();
+  const popup = await popupPromise;
+  const workspacePage = popup || page;
+  await waitForFlowWorkspace(workspacePage, logger, popup ? 'about:blank' : startingUrl);
+  await waitForWorkspace(workspacePage, logger);
+  const workspaceUrl = workspacePage.url();
+  logger.info(
+    `Google Flow workspace ready: ${JSON.stringify({
+      url: workspaceUrl,
+      title: await workspacePage.title(),
+    })}`,
+  );
+  return workspacePage;
 }
 
 async function clickFirst(locator) {
@@ -121,7 +210,6 @@ async function findPromptInput(page, timeoutMs) {
 async function clickProjectCreationButton(page, timeoutMs) {
   const candidates = [
     page.getByRole('button', { name: /new project/i }),
-    page.getByRole('button', { name: /create with flow/i }),
     page.getByRole('button', { name: /^\s*\+\s*$/ }),
     page.locator(
       'button[aria-label*="new project" i], button[title*="new project" i], ' +
@@ -254,14 +342,14 @@ export async function generateClips({
   const context = await chromium.launchPersistentContext(profileDir, browserOptions);
 
   try {
-    const page = context.pages()[0] ?? (await context.newPage());
+    let page = context.pages()[0] ?? (await context.newPage());
     await page.goto(flowUrl, { waitUntil: 'domcontentloaded' });
     const pageUrl = page.url();
     const pageTitle = await page.title();
     logger.info(
       `Google Flow page after navigation: ${JSON.stringify({ url: pageUrl, title: pageTitle })}`,
     );
-    await waitForWorkspace(page, logger);
+    page = await navigateToFlowWorkspace(page, logger);
 
     const clipPaths = [];
     for (const [index, prompt] of scenePrompts.entries()) {
