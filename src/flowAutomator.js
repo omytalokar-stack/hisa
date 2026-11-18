@@ -4,7 +4,18 @@ import { join } from 'node:path';
 
 const SIGN_IN_TIMEOUT_MS = 5 * 60 * 1000;
 const CLIP_TIMEOUT_MS = 3 * 60 * 1000;
+const PROMPT_INPUT_TIMEOUT_MS = 15 * 1000;
+const PROJECT_BUTTON_TIMEOUT_MS = 3 * 1000;
 const FLOW_STORAGE_STATE_PATH = '/tmp/flow-storage-state.json';
+const PROMPT_INPUT_SELECTOR = [
+  'textarea:visible',
+  '[contenteditable="true"]:visible',
+  '[role="textbox"]:visible',
+  'input[placeholder*="prompt" i]:visible',
+  'input[placeholder*="describe" i]:visible',
+  'input[placeholder*="imagine" i]:visible',
+  'input[placeholder*="create" i]:visible',
+].join(', ');
 
 export function decodeFlowStorageState(encodedState) {
   const stateJson = Buffer.from(encodedState, 'base64').toString('utf8');
@@ -93,6 +104,65 @@ async function clickFirst(locator) {
   return false;
 }
 
+async function findPromptInput(page, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    const inputs = page.locator(PROMPT_INPUT_SELECTOR);
+    if (await inputs.count()) {
+      return inputs.first();
+    }
+    if (Date.now() >= deadline) {
+      return null;
+    }
+    await page.waitForTimeout(Math.min(250, deadline - Date.now()));
+  }
+}
+
+async function clickProjectCreationButton(page, timeoutMs) {
+  const candidates = [
+    page.getByRole('button', { name: /new project/i }),
+    page.getByRole('button', { name: /create with flow/i }),
+    page.getByRole('button', { name: /^\s*\+\s*$/ }),
+    page.locator(
+      'button[aria-label*="new project" i], button[title*="new project" i], ' +
+        'button[aria-label*="create project" i], button[title*="create project" i]',
+    ),
+  ];
+  const deadline = Date.now() + timeoutMs;
+
+  while (true) {
+    for (const candidate of candidates) {
+      const count = await candidate.count();
+      for (let index = 0; index < count; index += 1) {
+        const button = candidate.nth(index);
+        if (await button.isVisible() && await button.isEnabled()) {
+          await button.click();
+          return true;
+        }
+      }
+    }
+    if (Date.now() >= deadline) {
+      return false;
+    }
+    await page.waitForTimeout(Math.min(250, deadline - Date.now()));
+  }
+}
+
+async function promptInputError(page) {
+  let pageText;
+  try {
+    pageText = (await page.locator('body').innerText({ timeout: 2000 })).slice(0, 1200);
+  } catch (error) {
+    pageText = `Unable to read page text: ${error.message}`;
+  }
+  return new Error(
+    `Could not find the Flow AI prompt input.\n` +
+      `Current URL: ${page.url()}\n` +
+      `Page title: ${await page.title()}\n` +
+      `Page text: ${pageText}`,
+  );
+}
+
 async function selectVerticalAspectRatio(page) {
   const ratioMenu = page.getByRole('button', { name: /aspect|ratio|9:16/i });
   if (await ratioMenu.count()) {
@@ -101,12 +171,22 @@ async function selectVerticalAspectRatio(page) {
   await clickFirst(page.getByText('9:16', { exact: true }));
 }
 
-async function fillPrompt(page, prompt) {
-  const inputs = page.locator('textarea, [contenteditable="true"], [role="textbox"]');
-  if (!(await inputs.count())) {
-    throw new Error('Could not find the Flow AI prompt input.');
+async function fillPrompt(page, prompt, timeoutMs) {
+  const startedAt = Date.now();
+  const inputTimeout = Math.min(PROMPT_INPUT_TIMEOUT_MS, timeoutMs);
+  let input = await findPromptInput(page, 0);
+
+  if (!input) {
+    await clickProjectCreationButton(
+      page,
+      Math.min(PROJECT_BUTTON_TIMEOUT_MS, inputTimeout),
+    );
+    input = await findPromptInput(page, Math.max(0, inputTimeout - (Date.now() - startedAt)));
   }
-  await inputs.first().fill(prompt);
+  if (!input) {
+    throw await promptInputError(page);
+  }
+  await input.fill(prompt);
 }
 
 async function waitForDownloadButton(page, deadline) {
@@ -135,7 +215,7 @@ async function waitForDownloadButton(page, deadline) {
 export async function automateScene(page, prompt, outputPath, timeoutMs = CLIP_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   await selectVerticalAspectRatio(page);
-  await fillPrompt(page, prompt);
+  await fillPrompt(page, prompt, Math.max(0, deadline - Date.now()));
 
   const generateButton = page.getByRole('button', { name: /generate|create/i });
   if (!(await generateButton.count())) {
@@ -176,6 +256,11 @@ export async function generateClips({
   try {
     const page = context.pages()[0] ?? (await context.newPage());
     await page.goto(flowUrl, { waitUntil: 'domcontentloaded' });
+    const pageUrl = page.url();
+    const pageTitle = await page.title();
+    logger.info(
+      `Google Flow page after navigation: ${JSON.stringify({ url: pageUrl, title: pageTitle })}`,
+    );
     await waitForWorkspace(page, logger);
 
     const clipPaths = [];

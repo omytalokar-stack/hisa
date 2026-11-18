@@ -141,16 +141,18 @@ test('cleans up a job directory when a clip fails validation', async () => {
   }
 });
 
-test('fills a mocked Flow page and saves its generated MP4 download', async () => {
+test('opens a new project and fills a contenteditable Flow prompt editor', async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), 'hisa-flow-test-'));
   const outputPath = join(tempRoot, 'clip.mp4');
   let promptValue = '';
   let generated = false;
+  let promptVisible = false;
 
   const locator = (kind) => ({
     count: async () => {
       if (kind === 'ratio') return 1;
-      if (kind === 'prompt') return 1;
+      if (kind === 'prompt') return promptVisible ? 1 : 0;
+      if (kind === 'newProject') return 1;
       if (kind === 'generate') return generated ? 0 : 1;
       if (kind === 'download') return generated ? 1 : 0;
       return 0;
@@ -158,11 +160,16 @@ test('fills a mocked Flow page and saves its generated MP4 download', async () =
     first() {
       return this;
     },
+    nth() {
+      return this;
+    },
+    isVisible: async () => true,
     isEnabled: async () => true,
     fill: async (value) => {
       promptValue = value;
     },
     click: async () => {
+      if (kind === 'newProject') promptVisible = true;
       if (kind === 'generate') generated = true;
     },
   });
@@ -190,10 +197,15 @@ test('fills a mocked Flow page and saves its generated MP4 download', async () =
     }
   });
   const page = {
-    locator: (selector) => locator(selector.startsWith('textarea') ? 'prompt' : 'other'),
+    locator: (selector) =>
+      locator(selector.includes('[contenteditable="true"]') ? 'prompt' : 'other'),
     getByText: (text) => locator(text === '9:16' ? 'ratio' : 'other'),
-    getByRole: (_role, options) =>
-      locator(/generate|create/i.test(options.name) ? 'generate' : 'download'),
+    getByRole: (_role, options) => {
+      const name = String(options.name);
+      if (/new project/i.test(name)) return locator('newProject');
+      if (/aspect|ratio|9:16/i.test(name)) return locator('ratio');
+      return locator(/generate|create/i.test(name) ? 'generate' : 'download');
+    },
     waitForEvent: async () => ({
       saveAs: async (path) => writeFile(path, Buffer.alloc(51 * 1024)),
     }),
@@ -206,4 +218,29 @@ test('fills a mocked Flow page and saves its generated MP4 download', async () =
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
+});
+
+test('includes the current Flow page details when the prompt editor is missing', async () => {
+  const page = {
+    locator: (selector) => ({
+      count: async () => (selector === 'body' ? 1 : 0),
+      first() {
+        return this;
+      },
+      innerText: async () => 'Welcome to Flow',
+    }),
+    getByText: () => ({ count: async () => 0 }),
+    getByRole: () => ({ count: async () => 0 }),
+    waitForTimeout: (timeout) => new Promise((resolve) => setTimeout(resolve, timeout)),
+    url: () => 'https://flow.google.com/projects',
+    title: async () => 'Google Flow projects',
+  };
+
+  await assert.rejects(
+    automateScene(page, 'A cinematic scene', '/tmp/unused.mp4', 50),
+    (error) =>
+      error.message.includes('https://flow.google.com/projects') &&
+      error.message.includes('Google Flow projects') &&
+      error.message.includes('Welcome to Flow'),
+  );
 });
